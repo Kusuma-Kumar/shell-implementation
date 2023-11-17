@@ -45,9 +45,13 @@ extern char **environ;
 #define MAX_ARGS 10
 
 void executeCommands(char *command);
+void handleInputRedirection(char *args[], int *argCount);
+void handleOutputRedirection(char *args[], int *argCount);
+void printArguments(char *args[], int argCount);
 
 int main() {
     char input[MAX_INPUT_SIZE];
+    
     while (1) {
         // Print prompt
         printf("my-shell$ ");
@@ -84,7 +88,7 @@ void executeCommands(char *command){
     
     if (pipe(pipefd) == -1) {
         perror("pipe");
-        exit(EXIT_FAILURE);
+        return; // print error message and prompt user for next command
     }
 
     token = strtok(command, " ");
@@ -94,6 +98,8 @@ void executeCommands(char *command){
     }
     args[argCount] = NULL;
 
+    printArguments(args, argCount);
+
     // empty command
     if (argCount == 0) {
         return;
@@ -102,18 +108,32 @@ void executeCommands(char *command){
     // Fork a child process
     if((cpid = fork()) == -1) {
         perror("fork");
-        exit(EXIT_FAILURE);
+        return;
     }
 
     // Child reads from pipe 
     if (cpid == 0) {
         // do child process stuff
+
+        handleInputRedirection(args, &argCount);
+        handleOutputRedirection(args, &argCount);
+
         // Close write end of the pipe
         close(pipefd[1]);
+
+        // Redirect standard input if there is a previous command in a pipeline
+        if (argCount > 1) {
+            dup2(pipefd[0], STDIN_FILENO);
+            close(pipefd[0]);
+        }
+
+        // Execute the command
+        execvp(args[0], args);
+        perror("execvp");
+        return;
     
-    // Parent writes to pipe
-    } else {
-        // do parent stuff
+
+    } else {   // do parent stuff - write to pipe
         
         // Close read end of the pipe
         close(pipefd[0]);
@@ -124,8 +144,66 @@ void executeCommands(char *command){
             close(pipefd[1]);
         }
 
-        // Wait for the child to finish
-        wait(NULL);
-        exit(EXIT_SUCCESS);
+        // Wait for the specific child process to finish so 
+        // when child is done exectuting, primt prompt again and wait for user input
+        waitpid(cpid, NULL, 0);
     }
+}
+
+void handleInputRedirection(char *args[], int *argCount) {
+    // input redirection (<)
+    if (*argCount > 2 && strcmp(args[*argCount - 2], "<") == 0) {
+        printf("%s\n", args[*argCount - 1]);
+        FILE *inputFile = fopen(args[*argCount - 1], "r");
+        if (inputFile == NULL) {
+            perror("fopen");
+            return;
+        }
+
+        dup2(fileno(inputFile), STDIN_FILENO);
+        fclose(inputFile);
+
+        // Remove the input redirection tokens
+        args[*argCount - 2] = NULL;
+        args[*argCount - 1] = NULL;
+    }
+}
+
+void handleOutputRedirection(char *args[], int *argCount) {
+    // output redirection (> and >>)
+    if (*argCount > 2 && (strcmp(args[*argCount - 2], ">") == 0 || strcmp(args[*argCount - 2], ">>") == 0)) {
+        FILE *outputFile;
+
+        if (strcmp(args[*argCount - 2], ">") == 0) {
+            // Truncate file to zero length
+            outputFile = fopen(args[*argCount - 1], "w");
+        } else {
+            // Open for appending (writing at the end of the file).
+            outputFile = fopen(args[*argCount - 1], "a");
+        }
+
+        if (outputFile == NULL) {
+            perror("fopen");
+            return;
+        }
+        dup2(fileno(outputFile), STDOUT_FILENO);
+        fclose(outputFile);
+
+        // Remove the output redirection tokens
+        args[*argCount - 2] = NULL;
+        args[*argCount - 1] = NULL;
+        printArguments(args, *argCount);
+    } 
+}
+
+void printArguments(char *args[], int argCount) {
+    // Print the arguments
+    printf("Arguments: ");
+    for (int i = 0; i < argCount; i++) {
+        printf("%s ", args[i]);
+    }
+    printf("\n");
+
+    // Print the argument count
+    printf("Argument Count: %d\n", argCount);
 }
