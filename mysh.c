@@ -31,8 +31,6 @@ Pipe should prob be called before fork ?
 stdin (fd 0) is where a program receives its input from (eg, typing at the keyboard)
 stdout (fd 1) is where a program’s output goes by default (eg, printf)
 stderr (fd 2) is where errors printed by a program go by default (eg, perror)
-create an array of file decriptors 0,1 for piping? pass output of one as input to the other
-pipefd[0] refers to the read end of the pipe. pipefd[1] refers to the write end of the pipe.
 */
 
 #include <unistd.h>
