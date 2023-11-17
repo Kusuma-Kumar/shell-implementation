@@ -71,8 +71,9 @@ int main() {
         input[strcspn(input, "\n")] = '\0';
 
         executeCommands(input);
-
     }
+    
+    return 0;
 }
 
 void executeCommands(char *command){
