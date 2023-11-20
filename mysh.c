@@ -45,8 +45,11 @@ extern char **environ;
 #define MAX_ARGS 10
 
 void executeCommands(char *command);
-void handleInputRedirection(char *args[], int *argCount);
-void handleOutputRedirection(char *args[], int *argCount);
+void forkAndExec(char *args[]);
+void handleInputRedirection(char *fileName);
+void handleOutputRedirection(char *fileName);
+void handlePiping(char *args[]);
+char * tokenize(char *input);
 void printArguments(char *args[], int argCount);
 
 int main() {
@@ -78,32 +81,41 @@ int main() {
     return 0;
 }
 
-void executeCommands(char *command){
+void executeCommands(char *command) {
     // create tokens from given command as arguments will be separated by a single space
     char *args[MAX_ARGS + 1];
     char *token;
     int argCount = 0;
-    pid_t cpid;
-    int pipefd[2]; // initialize default file descriptors
     
-    if (pipe(pipefd) == -1) {
-        perror("pipe");
-        return; // print error message and prompt user for next command
+    token = tokenize(command);
+    
+    char *arg = strtok(token, " ");
+    int i = 0;
+    while (arg) {
+        printf("Arg is%s\n", arg);
+        if (*arg == '<') {
+            handleInputRedirection(strtok(NULL, " "));
+        } else if (*arg == '>') {
+            handleOutputRedirection(strtok(NULL, " "));
+        } else if (*arg == '|') {
+            args[i] = NULL;
+            handlePiping(args);
+            i = 0;
+        } else {
+            args[i] = arg;
+            i++;
+        }
+        arg = strtok(NULL, " ");
     }
+    args[i] = NULL;
 
-    token = strtok(command, " ");
-    while (token != NULL && argCount < MAX_ARGS) {
-        args[argCount++] = token;
-        token = strtok(NULL, " ");
-    }
-    args[argCount] = NULL;
+    forkAndExec(args);
+    
+    return;
+}
 
-    printArguments(args, argCount);
-
-    // empty command
-    if (argCount == 0) {
-        return;
-    }
+void forkAndExec(char *args[]) {
+    pid_t cpid;
 
     // Fork a child process
     if((cpid = fork()) == -1) {
@@ -113,87 +125,109 @@ void executeCommands(char *command){
 
     // Child reads from pipe 
     if (cpid == 0) {
+        
         // do child process stuff
-
-        handleInputRedirection(args, &argCount);
-        handleOutputRedirection(args, &argCount);
-
-        // Close write end of the pipe
-        close(pipefd[1]);
-
-        // Redirect standard input if there is a previous command in a pipeline
-        if (argCount > 1) {
-            dup2(pipefd[0], STDIN_FILENO);
-            close(pipefd[0]);
+        // Print the command being executed
+        printf("Command: ");
+        for (int i = 0; args[i] != NULL; ++i) {
+            printf("%s ", args[i]);
         }
+        printf("\n");
 
-        // Execute the command
         execvp(args[0], args);
         perror("execvp");
-        return;
-    
 
     } else {   // do parent stuff - write to pipe
-        
-        // Close read end of the pipe
-        close(pipefd[0]);
-
-        // Redirect standard output if there is a subsequent command in a pipeline
-        if (argCount > 1) {
-            dup2(pipefd[1], STDOUT_FILENO);
-            close(pipefd[1]);
-        }
+        printf("Back in parent\n");
 
         // Wait for the specific child process to finish so 
         // when child is done exectuting, primt prompt again and wait for user input
         waitpid(cpid, NULL, 0);
     }
+    // i want to redirect my inputs and output to the terminal 
+    // instead of in the files i was currently receiving or writing to
+    handleInputRedirection("/dev/tty");
+    handleOutputRedirection("/dev/tty");
 }
 
-void handleInputRedirection(char *args[], int *argCount) {
+void handleInputRedirection(char *fileName) {
     // input redirection (<)
-    if (*argCount > 2 && strcmp(args[*argCount - 2], "<") == 0) {
-        printf("%s\n", args[*argCount - 1]);
-        FILE *inputFile = fopen(args[*argCount - 1], "r");
-        if (inputFile == NULL) {
-            perror("fopen");
-            return;
-        }
-
-        dup2(fileno(inputFile), STDIN_FILENO);
-        fclose(inputFile);
-
-        // Remove the input redirection tokens
-        args[*argCount - 2] = NULL;
-        args[*argCount - 1] = NULL;
+    FILE *inputFile = fopen(fileName, "r");
+    if (inputFile == NULL) {
+        perror("fopen");
+        return;
     }
+
+    dup2(fileno(inputFile), STDIN_FILENO);
+    fclose(inputFile);
 }
 
-void handleOutputRedirection(char *args[], int *argCount) {
+void handleOutputRedirection(char *fileName) {
     // output redirection (> and >>)
-    if (*argCount > 2 && (strcmp(args[*argCount - 2], ">") == 0 || strcmp(args[*argCount - 2], ">>") == 0)) {
-        FILE *outputFile;
+    printf("handling output\n");
+    FILE *outputFile;
 
-        if (strcmp(args[*argCount - 2], ">") == 0) {
-            // Truncate file to zero length
-            outputFile = fopen(args[*argCount - 1], "w");
+    // if (strcmp(args[*argCount - 2], ">") == 0) {
+    //     // Truncate file to zero length
+    //     outputFile = fopen(fileName, "w");
+    // } else {
+    //     // Open for appending (writing at the end of the file).
+    //     outputFile = fopen(fileName, "a");
+    // }
+    outputFile = fopen(fileName, "w");
+    
+    if (outputFile == NULL) {
+        perror("fopen");
+        return;
+    }
+    dup2(fileno(outputFile), STDOUT_FILENO);
+    fclose(outputFile);
+}
+
+void handlePiping(char *args[]) {
+    int pipefd[2]; // initialize default file descriptors
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        return; // print error message and prompt user for next command
+    }
+
+    dup2(pipefd[1], STDOUT_FILENO);
+    close(pipefd[1]); // Close write end of the pipe
+
+    printf("args = %s\n", *args);
+
+    forkAndExec(args);
+
+    dup2(pipefd[0], STDIN_FILENO);
+    close(pipefd[0]); // Close read end of the pipe
+}
+
+char * tokenize(char *input) {
+    printf("in tokenize\n");
+    int i;
+    int j = 0;
+    char *tokenized = (char *)malloc((MAX_INPUT_SIZE * 2) * sizeof(char));
+
+    // add spaces around special characters
+    for (i = 0; i < strlen(input); i++) {
+        if (input[i] != '>' && input[i] != '<' && input[i] != '|') {
+            tokenized[j++] = input[i];
         } else {
-            // Open for appending (writing at the end of the file).
-            outputFile = fopen(args[*argCount - 1], "a");
+            tokenized[j++] = ' ';
+            tokenized[j++] = input[i];
+            tokenized[j++] = ' ';
         }
+    }
+    tokenized[j++] = '\0';
 
-        if (outputFile == NULL) {
-            perror("fopen");
-            return;
-        }
-        dup2(fileno(outputFile), STDOUT_FILENO);
-        fclose(outputFile);
+    // add null to the end
+    char *end;
+    end = tokenized + strlen(tokenized) - 1;
+    end--;
+    *(end + 1) = '\0';
+    printf("%s\n", tokenized);
 
-        // Remove the output redirection tokens
-        args[*argCount - 2] = NULL;
-        args[*argCount - 1] = NULL;
-        printArguments(args, *argCount);
-    } 
+    return tokenized;
 }
 
 void printArguments(char *args[], int argCount) {

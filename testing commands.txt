@@ -1,0 +1,8 @@
+ls
+ls -l -a
+echo Hello, World! // stay away from echo stuff?
+cat < README.md
+cat < Makefile
+echo Output Redirection > output.txt
+ls | grep mysh
+sleep 10 &
