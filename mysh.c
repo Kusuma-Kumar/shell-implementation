@@ -31,6 +31,9 @@ Pipe should prob be called before fork ?
 stdin (fd 0) is where a program receives its input from (eg, typing at the keyboard)
 stdout (fd 1) is where a program’s output goes by default (eg, printf)
 stderr (fd 2) is where errors printed by a program go by default (eg, perror)
+
+ work on when passing anything in double quotes to grep
+ wor on stuff ending with &
 */
 
 #include <unistd.h>
@@ -46,34 +49,29 @@ extern char **environ;
 
 void executeCommands(char *command);
 void forkAndExec(char *args[]);
-void handleInputRedirection(char *fileName);
-void handleOutputRedirection(char *fileName);
+void handleInputRedirection(char *fileName, char *mode);
+void handleOutputRedirection(char *fileName, char *mode);
 void handlePiping(char *args[]);
 char * tokenize(char *input);
 void printArguments(char *args[], int argCount);
 
+// starts the shell by printing prompt. Checks for EOF (Ctrl-D), exit command. 
 int main() {
     char input[MAX_INPUT_SIZE];
     
     while (1) {
-        // Print prompt
         printf("my-shell$ ");
         fflush(stdout);
 
         // Read input
         if (fgets(input, sizeof(input), stdin) == NULL) {
-            // if it is EOF (Ctrl-D)
             printf("\n");
-            break;
+            break; // if it is EOF (Ctrl-D)
         }
 
-        // Check for "exit" command
         if (strcmp(input, "exit\n") == 0) {
-            break;
+            break; // "exit" command
         }
-
-        // Remove newline character
-        input[strcspn(input, "\n")] = '\0';
 
         executeCommands(input);
     }
@@ -81,26 +79,31 @@ int main() {
     return 0;
 }
 
+// receives input given by the user, formats it by calling tokenize.
+// Loop through tokenized input and call functions based on special characters provided
 void executeCommands(char *command) {
-    // create tokens from given command as arguments will be separated by a single space
     char *args[MAX_ARGS + 1];
-    char *token;
-    int argCount = 0;
+    char *tokens;
     
-    token = tokenize(command);
+    tokens = tokenize(command);
+    char *arg = strtok(tokens, " ");
     
-    char *arg = strtok(token, " ");
     int i = 0;
     while (arg) {
-        printf("Arg is%s\n", arg);
-        if (*arg == '<') {
-            handleInputRedirection(strtok(NULL, " "));
-        } else if (*arg == '>') {
-            handleOutputRedirection(strtok(NULL, " "));
-        } else if (*arg == '|') {
+        if (strcmp(arg, "<") == 0) {
+            handleInputRedirection(strtok(NULL, " "), "r");
+        
+        } else if (strcmp(arg, ">>") == 0) {
+            handleOutputRedirection(strtok(NULL, " "), "a");
+        
+        } else if (strcmp(arg, ">") == 0) {
+            handleOutputRedirection(strtok(NULL, " "), "w");
+        
+        } else if (strcmp(arg, "|") == 0) {
             args[i] = NULL;
             handlePiping(args);
             i = 0;
+        
         } else {
             args[i] = arg;
             i++;
@@ -123,36 +126,24 @@ void forkAndExec(char *args[]) {
         return;
     }
 
-    // Child reads from pipe 
-    if (cpid == 0) {
-        
-        // do child process stuff
-        // Print the command being executed
-        printf("Command: ");
-        for (int i = 0; args[i] != NULL; ++i) {
-            printf("%s ", args[i]);
-        }
-        printf("\n");
-
+    if (cpid == 0) {    // do child stuff - reads from pipe
         execvp(args[0], args);
         perror("execvp");
 
-    } else {   // do parent stuff - write to pipe
-        printf("Back in parent\n");
-
+    } else {    // do parent stuff - write to pipe
         // Wait for the specific child process to finish so 
         // when child is done exectuting, primt prompt again and wait for user input
         waitpid(cpid, NULL, 0);
     }
-    // i want to redirect my inputs and output to the terminal 
-    // instead of in the files i was currently receiving or writing to
-    handleInputRedirection("/dev/tty");
-    handleOutputRedirection("/dev/tty");
+    
+    // redirect output from the file being written in back to the terminal 
+    handleOutputRedirection("/dev/tty", "w");
+    // dup2(STDERR_FILENO, STDOUT_FILENO); // duplicate stderr onto stdout
 }
 
-void handleInputRedirection(char *fileName) {
-    // input redirection (<)
-    FILE *inputFile = fopen(fileName, "r");
+// mode r - open for reading(<)
+void handleInputRedirection(char *fileName, char *mode) {
+    FILE *inputFile = fopen(fileName, mode);
     if (inputFile == NULL) {
         perror("fopen");
         return;
@@ -162,24 +153,17 @@ void handleInputRedirection(char *fileName) {
     fclose(inputFile);
 }
 
-void handleOutputRedirection(char *fileName) {
-    // output redirection (> and >>)
-    printf("handling output\n");
+// mode a - append(>>), mode w - truncate/create and write(>)
+void handleOutputRedirection(char *fileName, char *mode) {
     FILE *outputFile;
 
-    // if (strcmp(args[*argCount - 2], ">") == 0) {
-    //     // Truncate file to zero length
-    //     outputFile = fopen(fileName, "w");
-    // } else {
-    //     // Open for appending (writing at the end of the file).
-    //     outputFile = fopen(fileName, "a");
-    // }
-    outputFile = fopen(fileName, "w");
+    outputFile = fopen(fileName, mode);
     
     if (outputFile == NULL) {
         perror("fopen");
         return;
     }
+    
     dup2(fileno(outputFile), STDOUT_FILENO);
     fclose(outputFile);
 }
@@ -194,16 +178,14 @@ void handlePiping(char *args[]) {
     dup2(pipefd[1], STDOUT_FILENO);
     close(pipefd[1]); // Close write end of the pipe
 
-    printf("args = %s\n", *args);
-
     forkAndExec(args);
 
     dup2(pipefd[0], STDIN_FILENO);
     close(pipefd[0]); // Close read end of the pipe
 }
 
+// taken input and add spaces arount special characters(|,<,>,>>) for fomatting
 char * tokenize(char *input) {
-    printf("in tokenize\n");
     int i;
     int j = 0;
     char *tokenized = (char *)malloc((MAX_INPUT_SIZE * 2) * sizeof(char));
@@ -214,18 +196,23 @@ char * tokenize(char *input) {
             tokenized[j++] = input[i];
         } else {
             tokenized[j++] = ' ';
-            tokenized[j++] = input[i];
+            if ((input[i] == '>') && (input[i+1] == '>')) {
+                tokenized[j++] = input[i];
+                tokenized[j++] = input[i+1];
+                i++; // skip the second >
+            } else {
+                tokenized[j++] = input[i];
+            }
             tokenized[j++] = ' ';
         }
     }
     tokenized[j++] = '\0';
 
-    // add null to the end
+    // add null to the end, for commands that do not have any special characters
     char *end;
     end = tokenized + strlen(tokenized) - 1;
     end--;
     *(end + 1) = '\0';
-    printf("%s\n", tokenized);
 
     return tokenized;
 }
