@@ -1,6 +1,7 @@
 /*
  work on when passing anything in double quotes to grep
  work on when receiving a fopen error, it return but not back to main function as it should
+ work on when execvp error for output. It should not empty file contents when execvp fails (>)
 */
 
 #include <unistd.h>
@@ -14,16 +15,15 @@
 
 void executeCommands(char *command);
 void forkAndExec(char *args[]);
-void handleInputRedirection(char *fileName, char *mode);
-void handleOutputRedirection(char *fileName, char *mode);
-void handlePiping(char *args[]);
+int handleInputRedirection(char *fileName, char *mode);
+int handleOutputRedirection(char *fileName, char *mode);
+int handlePiping(char *args[]);
 char * tokenize(char *input);
 void printArguments(char *args[], int argCount);
 
 // starts the shell by printing prompt. Checks for EOF (Ctrl-D), exit command. 
 int main() {
     char input[MAX_INPUT_SIZE];
-    
     while (1) {
         printf("my-shell$ ");
         fflush(stdout);
@@ -35,7 +35,7 @@ int main() {
         }
 
         if (strcmp(input, "exit\n") == 0) {
-            break; // "exit" command
+            return 0; // "exit" command
         }
 
         executeCommands(input);
@@ -51,8 +51,17 @@ int main() {
 void executeCommands(char *command) {
     char *args[MAX_ARGS + 1];
     char *tokens;
-    int originalStdout = dup(STDOUT_FILENO); // Save the current standard output file descriptor
-    int originalStdin = dup(STDIN_FILENO); // Save the current standard input file descriptor
+    int originalStdout; // Save the current standard output file descriptor
+    int originalStdin; // Save the current standard input file descriptor
+    
+    if((originalStdout = dup(STDOUT_FILENO)) == -1) {
+        perror("dup");
+        return;
+    }
+    if((originalStdin = dup(STDIN_FILENO)) == -1) {
+        perror("dup");
+        return;
+    }
     
     tokens = tokenize(command);
     char *arg = strtok(tokens, " ");
@@ -63,17 +72,25 @@ void executeCommands(char *command) {
     int i = 0;
     while (arg) {
         if (strcmp(arg, "<") == 0) {
-            handleInputRedirection(strtok(NULL, " "), "r");
+            if (handleInputRedirection(strtok(NULL, " "), "r") == -1) {
+                return;
+            }
         
         } else if (strcmp(arg, ">>") == 0) {
-            handleOutputRedirection(strtok(NULL, " "), "a");
+            if (handleOutputRedirection(strtok(NULL, " "), "a") == -1) {
+                return;
+            }
         
         } else if (strcmp(arg, ">") == 0) {
-            handleOutputRedirection(strtok(NULL, " "), "w");
+            if (handleOutputRedirection(strtok(NULL, " "), "w") == -1) {
+                return;
+            }
         
         } else if (strcmp(arg, "|") == 0) {
             args[i] = NULL;
-            handlePiping(args);
+            if (handlePiping(args) == -1) {
+                return;
+            }
             i = 0;
         
         } else {
@@ -86,8 +103,14 @@ void executeCommands(char *command) {
 
     forkAndExec(args);
     // Restore the original standard output file descriptor so it can go back to receiving input and printing output in the terminal
-    dup2(originalStdout, STDOUT_FILENO);
-    dup2(originalStdin, STDIN_FILENO);
+    if(dup2(originalStdout, STDOUT_FILENO) == -1) {
+        perror("dup2");
+        return;
+    }
+    if(dup2(originalStdin, STDIN_FILENO) == -1) {
+        perror("dup2");
+        return;
+    }
 }
 
 // more for individual commands that do not need piping like ls
@@ -115,46 +138,63 @@ void forkAndExec(char *args[]) {
 }
 
 // mode r - open for reading(<)
-void handleInputRedirection(char *fileName, char *mode) {
+int handleInputRedirection(char *fileName, char *mode) {
     FILE *inputFile;
     if ((inputFile = fopen(fileName, mode)) == NULL) {
         perror("fopen");
-        return;
+        return -1;
     }
 
-    dup2(fileno(inputFile), STDIN_FILENO);
-    fclose(inputFile);
+    if(dup2(fileno(inputFile), STDIN_FILENO) == -1) {
+        perror("dup2");
+        return -1;
+    }
+    if(fclose(inputFile) == -1) {
+        perror("fclose");
+        return -1;
+    }
+    return 0;
 }
 
 // mode a - append(>>), mode w - truncate/create and write(>)
-void handleOutputRedirection(char *fileName, char *mode) {
+int handleOutputRedirection(char *fileName, char *mode) {
     FILE *outputFile;
     if ((outputFile = fopen(fileName, mode)) == NULL) {
         perror("fopen");
-        return;
+        return -1;
     }
     
-    dup2(fileno(outputFile), STDOUT_FILENO);
-    fclose(outputFile);
+    if(dup2(fileno(outputFile), STDOUT_FILENO) == -1) {
+        perror("dup2");
+        return -1;
+    }
+    if(fclose(outputFile) == -1) {
+        perror("fclose");
+        return -1;
+    }
+    return 0;
 }
 
-void handlePiping(char *args[]) {
+int handlePiping(char *args[]) {
     int pipefd[2]; // initialize default file descriptors
     pid_t cpid;
 
     if (pipe(pipefd) == -1) {
         perror("pipe");
-        return; // print error message and prompt user for the next command
+        return -1; 
     }
 
     if ((cpid = fork()) == -1) {
         perror("fork");
-        return; // print error message and prompt user for the next command
+        return -1; 
     }
 
     if (cpid == 0) { 
         close(pipefd[0]); // Close read end of the pipe in the child process
-        dup2(pipefd[1], STDOUT_FILENO);
+        if(dup2(pipefd[1], STDOUT_FILENO) == -1) {
+            perror("dup2");
+            return -1;
+        }
         close(pipefd[1]); // Close write end of the pipe
 
         // Execute the command in the child process
@@ -164,12 +204,16 @@ void handlePiping(char *args[]) {
 
     } else { 
         close(pipefd[1]); // Close write end of the pipe in the parent process
-        dup2(pipefd[0], STDIN_FILENO);
+        if(dup2(pipefd[0], STDIN_FILENO) == -1) {
+            perror("dup2");
+            return -1;
+        }
         close(pipefd[0]); // Close read end of the pipe
 
         // Wait for the child process to finish
         waitpid(cpid, NULL, 0);
     }
+    return 0;
 }
 
 
