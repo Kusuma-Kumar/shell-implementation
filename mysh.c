@@ -1,39 +1,6 @@
-/* Our own shell */
-
 /*
-WHAT EACH OF THE FOLLOWING DO:
-
-fork(2) - creates a child process by duplicating the calling process
-
-exec(3) - execute a file , return only if if an error has occurred , return value -1, 
-
-wait(2) - wait for process to change state, and obtain info , see return val 
-
-pipe(2)- creates pipe, undirectional data channel--> used for interprocess communication, return val 0 if error -1 and pipefd 
-         should be left unchanged 
-
-         pipefd is used to return 2 fd (referencing to the end of pipes)
-         pipefd[0] --> read end of the pipe
-         pipefd[1] --> write end of the pipe 
-
-dup(2)- duplicated a fd , meh i think this is one of the ones we might not have to use but look at later in case
-
-fgets(3)- reads characters from stream and stores into buffer pointed to by s 
-          return the character read as an unsigned char cast to an int or blah 
-
-strtok(3)- breaks a string into a sequence of zero or more nonempty tokens. First call, the string to be parsed should be specified in str.
-           each subsequent call that should parse the  same  string,  str must be NULL.
-           
-
-STUFF I THINK IS IMPORTANT/STUFF TO LOOK FURTHER INTO:
-Pipe should prob be called before fork ?
-
-stdin (fd 0) is where a program receives its input from (eg, typing at the keyboard)
-stdout (fd 1) is where a program’s output goes by default (eg, printf)
-stderr (fd 2) is where errors printed by a program go by default (eg, perror)
-
  work on when passing anything in double quotes to grep
- wor on stuff ending with &
+ work on when receiving a fopen error, it return but not back to main function as it should
 */
 
 #include <unistd.h>
@@ -41,8 +8,6 @@ stderr (fd 2) is where errors printed by a program go by default (eg, perror)
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-extern char **environ;
 
 #define MAX_INPUT_SIZE 4096
 #define MAX_ARGS 10
@@ -80,14 +45,21 @@ int main() {
 }
 
 // receives input given by the user, formats it by calling tokenize.
+// duplicate file descriptors STDIN_FILENO, STDOUT_FILENO
 // Loop through tokenized input and call functions based on special characters provided
+// reset file descriptors back to original (in terminal)
 void executeCommands(char *command) {
     char *args[MAX_ARGS + 1];
     char *tokens;
+    int originalStdout = dup(STDOUT_FILENO); // Save the current standard output file descriptor
+    int originalStdin = dup(STDIN_FILENO); // Save the current standard input file descriptor
     
     tokens = tokenize(command);
     char *arg = strtok(tokens, " ");
     
+    // while loop fill args with all of the argument right upto a speacial character is found
+    // after executing special charachter command args resets and continues collectiong all tokens until next special character is found
+    // args always contain only the program to be executed and its respective arguments
     int i = 0;
     while (arg) {
         if (strcmp(arg, "<") == 0) {
@@ -113,10 +85,12 @@ void executeCommands(char *command) {
     args[i] = NULL;
 
     forkAndExec(args);
-    
-    return;
+    // Restore the original standard output file descriptor so it can go back to receiving input and printing output in the terminal
+    dup2(originalStdout, STDOUT_FILENO);
+    dup2(originalStdin, STDIN_FILENO);
 }
 
+// more for individual commands that do not need piping like ls
 void forkAndExec(char *args[]) {
     pid_t cpid;
 
@@ -126,25 +100,24 @@ void forkAndExec(char *args[]) {
         return;
     }
 
-    if (cpid == 0) {    // do child stuff - reads from pipe
+    // do child stuff - reads from pipe
+    if (cpid == 0) {
         execvp(args[0], args);
         perror("execvp");
+        return;
 
-    } else {    // do parent stuff - write to pipe
+    // do parent stuff - write to pipe
+    } else {
         // Wait for the specific child process to finish so 
-        // when child is done exectuting, primt prompt again and wait for user input
+        // when child is done exectuting, print prompt again and wait for user input
         waitpid(cpid, NULL, 0);
     }
-    
-    // redirect output from the file being written in back to the terminal 
-    handleOutputRedirection("/dev/tty", "w");
-    // dup2(STDERR_FILENO, STDOUT_FILENO); // duplicate stderr onto stdout
 }
 
 // mode r - open for reading(<)
 void handleInputRedirection(char *fileName, char *mode) {
-    FILE *inputFile = fopen(fileName, mode);
-    if (inputFile == NULL) {
+    FILE *inputFile;
+    if ((inputFile = fopen(fileName, mode)) == NULL) {
         perror("fopen");
         return;
     }
@@ -156,10 +129,7 @@ void handleInputRedirection(char *fileName, char *mode) {
 // mode a - append(>>), mode w - truncate/create and write(>)
 void handleOutputRedirection(char *fileName, char *mode) {
     FILE *outputFile;
-
-    outputFile = fopen(fileName, mode);
-    
-    if (outputFile == NULL) {
+    if ((outputFile = fopen(fileName, mode)) == NULL) {
         perror("fopen");
         return;
     }
@@ -170,21 +140,40 @@ void handleOutputRedirection(char *fileName, char *mode) {
 
 void handlePiping(char *args[]) {
     int pipefd[2]; // initialize default file descriptors
+    pid_t cpid;
+
     if (pipe(pipefd) == -1) {
         perror("pipe");
-        return; // print error message and prompt user for next command
+        return; // print error message and prompt user for the next command
     }
 
-    dup2(pipefd[1], STDOUT_FILENO);
-    close(pipefd[1]); // Close write end of the pipe
+    if ((cpid = fork()) == -1) {
+        perror("fork");
+        return; // print error message and prompt user for the next command
+    }
 
-    forkAndExec(args);
+    if (cpid == 0) { 
+        close(pipefd[0]); // Close read end of the pipe in the child process
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]); // Close write end of the pipe
 
-    dup2(pipefd[0], STDIN_FILENO);
-    close(pipefd[0]); // Close read end of the pipe
+        // Execute the command in the child process
+        execvp(args[0], args);
+        perror("execvp");
+        // return;
+
+    } else { 
+        close(pipefd[1]); // Close write end of the pipe in the parent process
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[0]); // Close read end of the pipe
+
+        // Wait for the child process to finish
+        waitpid(cpid, NULL, 0);
+    }
 }
 
-// taken input and add spaces arount special characters(|,<,>,>>) for fomatting
+
+// add spaces around special characters(|,<,>,>>) in input for fomatting
 char * tokenize(char *input) {
     int i;
     int j = 0;
