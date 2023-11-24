@@ -1,7 +1,3 @@
-/*
- work on when passing anything in double quotes to grep
-*/
-
 #include <unistd.h>
 #include <sys/wait.h>
 #include <string.h>
@@ -16,7 +12,7 @@ void forkAndExec(char *args[]);
 int handleInputRedirection(char *fileName, char *mode);
 int handleOutputRedirection(char *fileName, char *mode);
 int handlePiping(char *args[]);
-char * tokenize(char *input);
+char *tokenize(char *input);
 void printArguments(char *args[], int argCount);
 
 // starts the shell by printing prompt. Checks for EOF (Ctrl-D), exit command. 
@@ -28,7 +24,7 @@ int main() {
 
         // Read input
         // mocking the bash terminal when you typed exit or click EOF, it automatically clear terminal
-        if (fgets(input, sizeof(input), stdin) == NULL || strcmp(input, "exit\n") == 0) {
+        if(fgets(input, sizeof(input), stdin) == NULL || strcmp(input, "exit\n") == 0) {
             printf("exit\n");
             executeCommands("clear\n");
             break; // if it is EOF (Ctrl-D) or exit terminal
@@ -67,24 +63,24 @@ void executeCommands(char *command) {
     // args always contain only the program to be executed and its respective arguments
     int i = 0;
     while (arg) {
-        if (strcmp(arg, "<") == 0) {
-            if (handleInputRedirection(strtok(NULL, " "), "r") == -1) {
+        if(strcmp(arg, "<") == 0) {
+            if(handleInputRedirection(strtok(NULL, " "), "r") == -1) {
                 return;
             }
         
-        } else if (strcmp(arg, ">>") == 0) {
-            if (handleOutputRedirection(strtok(NULL, " "), "a") == -1) {
+        } else if(strcmp(arg, ">>") == 0) {
+            if(handleOutputRedirection(strtok(NULL, " "), "a") == -1) {
                 return;
             }
         
-        } else if (strcmp(arg, ">") == 0) {
-            if (handleOutputRedirection(strtok(NULL, " "), "w") == -1) {
+        } else if(strcmp(arg, ">") == 0) {
+            if(handleOutputRedirection(strtok(NULL, " "), "w") == -1) {
                 return;
             }
         
-        } else if (strcmp(arg, "|") == 0) {
+        } else if(strcmp(arg, "|") == 0) {
             args[i] = NULL;
-            if (handlePiping(args) == -1) {
+            if(handlePiping(args) == -1) {
                 return;
             }
             i = 0;
@@ -98,6 +94,7 @@ void executeCommands(char *command) {
     args[i] = NULL;
 
     forkAndExec(args);
+    
     // Restore the original standard output file descriptor so it can go back to receiving input and printing output in the terminal
     if(dup2(originalStdout, STDOUT_FILENO) == -1) {
         perror("dup2");
@@ -109,7 +106,7 @@ void executeCommands(char *command) {
     }
 }
 
-// more for individual commands that do not need piping like ls
+// perform commands that are not explictly included in piping like ls and cat
 void forkAndExec(char *args[]) {
     pid_t cpid;
 
@@ -119,14 +116,12 @@ void forkAndExec(char *args[]) {
         return;
     }
 
-    // do child stuff - reads from pipe
-    if (cpid == 0) {
+    if(cpid == 0) { // do child stuff - reads from pipe
         execvp(args[0], args);
         perror("execvp");
         return;
 
-    // do parent stuff - write to pipe
-    } else {
+    } else { // do parent stuff - write to pipe
         // Wait for the specific child process to finish so 
         // when child is done exectuting, print prompt again and wait for user input
         waitpid(cpid, NULL, 0);
@@ -136,7 +131,7 @@ void forkAndExec(char *args[]) {
 // mode r - open for reading(<)
 int handleInputRedirection(char *fileName, char *mode) {
     FILE *inputFile;
-    if ((inputFile = fopen(fileName, mode)) == NULL) {
+    if((inputFile = fopen(fileName, mode)) == NULL) {
         perror("fopen");
         return -1;
     }
@@ -155,7 +150,7 @@ int handleInputRedirection(char *fileName, char *mode) {
 // mode a - append(>>), mode w - truncate/create and write(>)
 int handleOutputRedirection(char *fileName, char *mode) {
     FILE *outputFile;
-    if ((outputFile = fopen(fileName, mode)) == NULL) {
+    if((outputFile = fopen(fileName, mode)) == NULL) {
         perror("fopen");
         return -1;
     }
@@ -175,36 +170,47 @@ int handlePiping(char *args[]) {
     int pipefd[2]; // initialize default file descriptors
     pid_t cpid;
 
-    if (pipe(pipefd) == -1) {
+    if(pipe(pipefd) == -1) {
         perror("pipe");
         return -1; 
     }
 
-    if ((cpid = fork()) == -1) {
+    if((cpid = fork()) == -1) {
         perror("fork");
         return -1; 
     }
 
-    if (cpid == 0) { 
-        close(pipefd[0]); // Close read end of the pipe in the child process
+    if(cpid == 0) { 
+        if(close(pipefd[0]) == -1) { // Close read end of the pipe in the child process
+            perror("close");
+            return -1;
+        }
         if(dup2(pipefd[1], STDOUT_FILENO) == -1) {
             perror("dup2");
             return -1;
         }
-        close(pipefd[1]); // Close write end of the pipe
+        if(close(pipefd[1]) == -1) { // Close write end of the pipe
+            perror("close");
+            return -1;
+        }
 
         // Execute the command in the child process
         execvp(args[0], args);
         perror("execvp");
-        // return;
 
     } else { 
-        close(pipefd[1]); // Close write end of the pipe in the parent process
+        if(close(pipefd[1]) == -1) { // Close write end of the pipe in the parent process
+            perror("close");
+            return -1;
+        } 
         if(dup2(pipefd[0], STDIN_FILENO) == -1) {
             perror("dup2");
             return -1;
         }
-        close(pipefd[0]); // Close read end of the pipe
+        if(close(pipefd[0]) == -1) { // Close read end of the pipe iin the parent process
+            perror("close");
+            return -1;
+        }
 
         // Wait for the child process to finish
         waitpid(cpid, NULL, 0);
@@ -214,18 +220,18 @@ int handlePiping(char *args[]) {
 
 
 // add spaces around special characters(|,<,>,>>) in input for fomatting
-char * tokenize(char *input) {
+char *tokenize(char *input) {
     int i;
     int j = 0;
     char *tokenized = (char *)malloc((MAX_INPUT_SIZE * 2) * sizeof(char));
 
     // add spaces around special characters
     for (i = 0; i < strlen(input); i++) {
-        if (input[i] != '>' && input[i] != '<' && input[i] != '|') {
+        if(input[i] != '>' && input[i] != '<' && input[i] != '|') {
             tokenized[j++] = input[i];
         } else {
             tokenized[j++] = ' ';
-            if ((input[i] == '>') && (input[i+1] == '>')) {
+            if((input[i] == '>') && (input[i+1] == '>')) {
                 tokenized[j++] = input[i];
                 tokenized[j++] = input[i+1];
                 i++; // skip the second >
