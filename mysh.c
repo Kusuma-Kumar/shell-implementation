@@ -1,7 +1,5 @@
 /*
  work on when passing anything in double quotes to grep
- work on when receiving a fopen error, it return but not back to main function as it should
- work on when execvp error for output. It should not empty file contents when execvp fails (>)
 */
 
 #include <unistd.h>
@@ -29,13 +27,11 @@ int main() {
         fflush(stdout);
 
         // Read input
-        if (fgets(input, sizeof(input), stdin) == NULL) {
-            printf("\n");
-            break; // if it is EOF (Ctrl-D)
-        }
-
-        if (strcmp(input, "exit\n") == 0) {
-            return 0; // "exit" command
+        // mocking the bash terminal when you typed exit or click EOF, it automatically clear terminal
+        if (fgets(input, sizeof(input), stdin) == NULL || strcmp(input, "exit\n") == 0) {
+            printf("exit\n");
+            executeCommands("clear\n");
+            break; // if it is EOF (Ctrl-D) or exit terminal
         }
 
         executeCommands(input);
