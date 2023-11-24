@@ -6,6 +6,7 @@
 
 #define MAX_INPUT_SIZE 4096
 #define MAX_ARGS 10
+#define EXECVP_FFLUSH 3 // to flush and return to terminal when execvp fails
 
 void executeCommands(char *command);
 void forkAndExec(char *args[]);
@@ -109,6 +110,7 @@ void executeCommands(char *command) {
 // perform commands that are not explictly included in piping like ls and cat
 void forkAndExec(char *args[]) {
     pid_t cpid;
+    FILE *execFailure = (FILE *)EXECVP_FFLUSH;
 
     // Fork a child process
     if((cpid = fork()) == -1) {
@@ -119,6 +121,7 @@ void forkAndExec(char *args[]) {
     if(cpid == 0) { // do child stuff - reads from pipe
         execvp(args[0], args);
         perror("execvp");
+        fflush(execFailure);
         return;
 
     } else { // do parent stuff - write to pipe
@@ -169,6 +172,7 @@ int handleOutputRedirection(char *fileName, char *mode) {
 int handlePiping(char *args[]) {
     int pipefd[2]; // initialize default file descriptors
     pid_t cpid;
+    FILE *execFailure = (FILE *)EXECVP_FFLUSH;
 
     if(pipe(pipefd) == -1) {
         perror("pipe");
@@ -197,6 +201,8 @@ int handlePiping(char *args[]) {
         // Execute the command in the child process
         execvp(args[0], args);
         perror("execvp");
+        fflush(execFailure);
+        return -1;
 
     } else { 
         if(close(pipefd[1]) == -1) { // Close write end of the pipe in the parent process
@@ -217,7 +223,6 @@ int handlePiping(char *args[]) {
     }
     return 0;
 }
-
 
 // add spaces around special characters(|,<,>,>>) in input for fomatting
 char *tokenize(char *input) {
