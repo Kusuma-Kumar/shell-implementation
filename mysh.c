@@ -59,7 +59,7 @@ void executeCommands(char *command) {
     tokens = tokenize(command);
     char *arg = strtok(tokens, " ");
     
-    // while loop fill args with all of the argument right upto a speacial character is found
+    // while loop fill args with all of the argument right upto a special character is found
     // after executing special charachter command args resets and continues collectiong all tokens until next special character is found
     // args always contain only the program to be executed and its respective arguments
     int i = 0;
