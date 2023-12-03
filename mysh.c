@@ -2,16 +2,17 @@
 #include <sys/wait.h>
 #include <string.h>
 #include <stdio.h>
+#include <fcntl.h>
 #include <stdlib.h>
 
 #define MAX_INPUT_SIZE 4096
 #define MAX_ARGS 10
-#define EXECVP_FFLUSH 3 // to flush and return to terminal when execvp fails
+// to flush and return to terminal when execvp fails
+#define EXECVP_FFLUSH 3 
 
 void executeCommands(char *command);
 void forkAndExec(char *args[]);
-int handleInputRedirection(char *fileName, char *mode);
-int handleOutputRedirection(char *fileName, char *mode);
+int handleIORedirection(char *fileName, int flags);
 int handlePiping(char *args[]);
 char *tokenize(char *input);
 void printArguments(char *args[], int argCount);
@@ -24,16 +25,19 @@ int main() {
         fflush(stdout);
 
         // Read input
-        // mocking the bash terminal when you typed exit or click EOF, it automatically clear terminal
         if(fgets(input, sizeof(input), stdin) == NULL || strcmp(input, "exit\n") == 0) {
-            printf("exit\n");
-            executeCommands("clear\n");
-            break; // if it is EOF (Ctrl-D) or exit terminal
+            // input indicates EOF (Ctrl-D)
+            break; 
+        }
+
+        // user entered exit
+        if(strcmp(input, "exit\n") == 0) {
+            break; 
         }
 
         executeCommands(input);
     }
-    
+    printf("\n");
     return 0;
 }
 
@@ -44,9 +48,14 @@ int main() {
 void executeCommands(char *command) {
     char *args[MAX_ARGS + 1];
     char *tokens;
-    int originalStdout; // Save the current standard output file descriptor
-    int originalStdin; // Save the current standard input file descriptor
-    
+    // Save the current standard output file descriptor
+    int originalStdout; 
+    // Save the current standard input file descriptor
+    int originalStdin; 
+    // Keep track of child process PIDs
+    pid_t childPIDs[MAX_ARGS];
+    int childCount = 0;
+
     if((originalStdout = dup(STDOUT_FILENO)) == -1) {
         perror("dup");
         return;
@@ -65,23 +74,27 @@ void executeCommands(char *command) {
     int i = 0;
     while (arg) {
         if(strcmp(arg, "<") == 0) {
-            if(handleInputRedirection(strtok(NULL, " "), "r") == -1) {
+            if(handleIORedirection(strtok(NULL, " "), O_RDONLY) == -1) {
                 return;
             }
         
         } else if(strcmp(arg, ">>") == 0) {
-            if(handleOutputRedirection(strtok(NULL, " "), "a") == -1) {
+            if(handleIORedirection(strtok(NULL, " "), O_WRONLY | O_CREAT | O_APPEND) == -1) {
                 return;
             }
         
         } else if(strcmp(arg, ">") == 0) {
-            if(handleOutputRedirection(strtok(NULL, " "), "w") == -1) {
+            if(handleIORedirection(strtok(NULL, " "), O_WRONLY | O_CREAT | O_TRUNC) == -1) {
                 return;
             }
         
         } else if(strcmp(arg, "|") == 0) {
             args[i] = NULL;
-            if(handlePiping(args) == -1) {
+            // After executing commands, collect child PIDs
+            int childPID = handlePiping(args);
+            if (childPID != -1) {
+                childPIDs[childCount++] = childPID;
+            } else {
                 return;
             }
             i = 0;
@@ -105,6 +118,11 @@ void executeCommands(char *command) {
         perror("dup2");
         return;
     }
+
+    // Wait for all child processes to finish before exiting
+    for (int i = 0; i < childCount; i++) {
+        waitpid(childPIDs[i], NULL, 0);
+    }
 }
 
 // perform commands that are not explictly included in piping like ls and cat
@@ -124,53 +142,44 @@ void forkAndExec(char *args[]) {
         fflush(execFailure);
         return;
 
-    } else { // do parent stuff - write to pipe
+    } else { 
+        // do parent stuff - write to pipe
         // Wait for the specific child process to finish so 
         // when child is done exectuting, print prompt again and wait for user input
         waitpid(cpid, NULL, 0);
     }
 }
 
-// mode r - open for reading(<)
-int handleInputRedirection(char *fileName, char *mode) {
-    FILE *inputFile;
-    if((inputFile = fopen(fileName, mode)) == NULL) {
-        perror("fopen");
-        return -1;
-    }
-
-    if(dup2(fileno(inputFile), STDIN_FILENO) == -1) {
-        perror("dup2");
-        return -1;
-    }
-    if(fclose(inputFile) == -1) {
-        perror("fclose");
-        return -1;
-    }
-    return 0;
-}
-
-// mode a - append(>>), mode w - truncate/create and write(>)
-int handleOutputRedirection(char *fileName, char *mode) {
-    FILE *outputFile;
-    if((outputFile = fopen(fileName, mode)) == NULL) {
+// opens files based on flags provide and directs it to STDIN_FILENO or STDOUT_FILENO respectively
+int handleIORedirection(char *fileName, int flags) {
+    int fd;
+    if((fd = open(fileName, flags)) == -1) {
         perror("fopen");
         return -1;
     }
     
-    if(dup2(fileno(outputFile), STDOUT_FILENO) == -1) {
-        perror("dup2");
-        return -1;
+    if (flags == O_RDONLY) {
+        if (dup2(fd, STDIN_FILENO) == -1) {
+            perror("dup2");
+            return -1;
+        }
+    } else {
+        if (dup2(fd, STDOUT_FILENO) == -1) {
+            perror("dup2");
+            return -1;
+        }
     }
-    if(fclose(outputFile) == -1) {
-        perror("fclose");
+    
+    if(close(fd) == -1) {
+        perror("close");
         return -1;
     }
     return 0;
 }
 
 int handlePiping(char *args[]) {
-    int pipefd[2]; // initialize default file descriptors
+    // initialize default file descriptors
+    int pipefd[2]; 
     pid_t cpid;
     FILE *execFailure = (FILE *)EXECVP_FFLUSH;
 
@@ -185,7 +194,8 @@ int handlePiping(char *args[]) {
     }
 
     if(cpid == 0) { 
-        if(close(pipefd[0]) == -1) { // Close read end of the pipe in the child process
+        // Close read end of the pipe in the child process
+        if(close(pipefd[0]) == -1) { 
             perror("close");
             return -1;
         }
@@ -205,7 +215,8 @@ int handlePiping(char *args[]) {
         return -1;
 
     } else { 
-        if(close(pipefd[1]) == -1) { // Close write end of the pipe in the parent process
+        // Close write end of the pipe in the parent process
+        if(close(pipefd[1]) == -1) { 
             perror("close");
             return -1;
         } 
@@ -213,13 +224,14 @@ int handlePiping(char *args[]) {
             perror("dup2");
             return -1;
         }
-        if(close(pipefd[0]) == -1) { // Close read end of the pipe iin the parent process
+         // Close read end of the pipe iin the parent process
+        if(close(pipefd[0]) == -1) {
             perror("close");
             return -1;
         }
 
-        // Wait for the child process to finish
-        waitpid(cpid, NULL, 0);
+        // Return the PID of the child process
+        return cpid; 
     }
     return 0;
 }
@@ -239,7 +251,8 @@ char *tokenize(char *input) {
             if((input[i] == '>') && (input[i+1] == '>')) {
                 tokenized[j++] = input[i];
                 tokenized[j++] = input[i+1];
-                i++; // skip the second >
+                // skip the second >
+                i++; 
             } else {
                 tokenized[j++] = input[i];
             }
@@ -255,16 +268,4 @@ char *tokenize(char *input) {
     *(end + 1) = '\0';
 
     return tokenized;
-}
-
-void printArguments(char *args[], int argCount) {
-    // Print the arguments
-    printf("Arguments: ");
-    for (int i = 0; i < argCount; i++) {
-        printf("%s ", args[i]);
-    }
-    printf("\n");
-
-    // Print the argument count
-    printf("Argument Count: %d\n", argCount);
 }
