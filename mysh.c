@@ -55,6 +55,7 @@ void executeCommands(char *command) {
     // Keep track of child process PIDs
     pid_t childPIDs[MAX_ARGS];
     int childCount = 0;
+    int failFlag = 0;
 
     if((originalStdout = dup(STDOUT_FILENO)) == -1) {
         perror("dup");
@@ -75,17 +76,20 @@ void executeCommands(char *command) {
     while (arg) {
         if(strcmp(arg, "<") == 0) {
             if(handleIORedirection(strtok(NULL, " "), O_RDONLY) == -1) {
-                return;
+                failFlag = 1;
+                break;
             }
         
         } else if(strcmp(arg, ">>") == 0) {
             if(handleIORedirection(strtok(NULL, " "), O_WRONLY | O_CREAT | O_APPEND) == -1) {
-                return;
+                failFlag = 1;
+                break;
             }
         
         } else if(strcmp(arg, ">") == 0) {
             if(handleIORedirection(strtok(NULL, " "), O_WRONLY | O_CREAT | O_TRUNC) == -1) {
-                return;
+                failFlag = 1;
+                break;
             }
         
         } else if(strcmp(arg, "|") == 0) {
@@ -95,7 +99,8 @@ void executeCommands(char *command) {
             if (childPID != -1) {
                 childPIDs[childCount++] = childPID;
             } else {
-                return;
+                failFlag = 1;
+                break;
             }
             i = 0;
         
@@ -107,8 +112,15 @@ void executeCommands(char *command) {
     }
     args[i] = NULL;
 
-    forkAndExec(args);
+    if(!failFlag) {
+        forkAndExec(args);
+    }
     
+    // Wait for all child processes to finish before exiting
+    for (int i = 0; i < childCount; i++) {
+        waitpid(childPIDs[i], NULL, 0);
+    }
+
     // Restore the original standard output file descriptor so it can go back to receiving input and printing output in the terminal
     if(dup2(originalStdout, STDOUT_FILENO) == -1) {
         perror("dup2");
@@ -119,10 +131,7 @@ void executeCommands(char *command) {
         return;
     }
 
-    // Wait for all child processes to finish before exiting
-    for (int i = 0; i < childCount; i++) {
-        waitpid(childPIDs[i], NULL, 0);
-    }
+    free(tokens);  // Free the memory allocated for tokens
 }
 
 // perform commands that are not explictly included in piping like ls and cat
@@ -137,6 +146,11 @@ void forkAndExec(char *args[]) {
     }
 
     if(cpid == 0) { // do child stuff - reads from pipe
+        // if (dup2(STDOUT_FILENO, STDERR_FILENO) == -1) {
+        //     perror("dup2");
+        //     return;
+        // }
+        
         execvp(args[0], args);
         perror("execvp");
         fflush(execFailure);
@@ -154,17 +168,19 @@ void forkAndExec(char *args[]) {
 int handleIORedirection(char *fileName, int flags) {
     int fd;
     if((fd = open(fileName, flags)) == -1) {
-        perror("fopen");
+        perror("open");
         return -1;
     }
     
     if (flags == O_RDONLY) {
         if (dup2(fd, STDIN_FILENO) == -1) {
+            close(fd);  // Close the file descriptor on failure
             perror("dup2");
             return -1;
         }
     } else {
         if (dup2(fd, STDOUT_FILENO) == -1) {
+            close(fd);  // Close the file descriptor on failure
             perror("dup2");
             return -1;
         }
