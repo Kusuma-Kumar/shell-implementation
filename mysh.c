@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 #define MAX_INPUT_SIZE 4096
 #define MAX_ARGS 10
@@ -167,7 +168,8 @@ void forkAndExec(char *args[]) {
 // opens files based on flags provide and directs it to STDIN_FILENO or STDOUT_FILENO respectively
 int handleIORedirection(char *fileName, int flags) {
     int fd;
-    if((fd = open(fileName, flags)) == -1) {
+    // user (file owner) should have read, write, and execute permission
+    if((fd = open(fileName, flags, S_IRWXU)) == -1) {
         perror("open");
         return -1;
     }
